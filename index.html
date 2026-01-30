@@ -102,115 +102,158 @@
 
   <h2>联系</h2>
   <ul>
-    <li>Email: or_cat@mail.ustc.edu.cn</li>
+    <li>Email: Or_Cat@mail.ustc.edu.cn</li>
   </ul>
 
   <script>
-    // === 配置：你的仓库信息 ===
-    const OWNER = "Oran9eCat";
-    const REPO  = "Oran9eCat.github.io";
-    const FOLDER_PATH = "PDF";     // 注意：你的文件夹是大写 PDF
-    const SHOW_N = 6;              // 显示最近几条
+  // === 配置：你的仓库信息 ===
+  const OWNER = "Oran9eCat";
+  const REPO  = "Oran9eCat.github.io";
+  const FOLDER_PATH = "PDF";              // 你的文件夹是大写 PDF
+  const WINDOW_HOURS = 168;               // 7 天 = 168 小时
+  const COMMITS_PER_PAGE = 30;            // 一次拉取多少条 commit（通常够用）
+  const MAX_COMMIT_PAGES = 5;             // 最多翻页几次（防止无限请求）
 
-    const btn = document.getElementById("updatesBtn");
-    const panel = document.getElementById("updatesPanel");
-    const listEl = document.getElementById("updatesList");
+  const btn = document.getElementById("updatesBtn");
+  const panel = document.getElementById("updatesPanel");
+  const listEl = document.getElementById("updatesList");
 
-    function fmtDate(iso){
-      const d = new Date(iso);
-      return new Intl.DateTimeFormat("zh-CN", {year:"numeric", month:"2-digit", day:"2-digit"}).format(d);
+  function pad2(n){ return String(n).padStart(2, "0"); }
+  function fmtDateCN(iso){
+    const d = new Date(iso);
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    return `${y}.${m}.${day}`;
+  }
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function fileLink(path){
+    // "PDF/xxx.pdf" -> "/PDF/xxx.pdf"（中文做 URL 编码）
+    const fileName = path.split("/").slice(1).join("/");
+    return `/${FOLDER_PATH}/${encodeURIComponent(fileName)}`;
+  }
+
+  function shortName(path){
+    // "PDF/史济怀_数学分析教程_下册.pdf" -> "史济怀_数学分析教程_下册.pdf"
+    return path.split("/").slice(1).join("/");
+  }
+
+  async function fetchCommitsPage(page){
+    const url =
+      `https://api.github.com/repos/${OWNER}/${REPO}/commits` +
+      `?path=${encodeURIComponent(FOLDER_PATH)}` +
+      `&per_page=${COMMITS_PER_PAGE}` +
+      `&page=${page}`;
+    const resp = await fetch(url, { headers: { "Accept": "application/vnd.github+json" } });
+    if(!resp.ok) throw new Error("无法读取 commits");
+    return await resp.json();
+  }
+
+  async function fetchCommitDetail(sha){
+    const url = `https://api.github.com/repos/${OWNER}/${REPO}/commits/${sha}`;
+    const resp = await fetch(url, { headers: { "Accept": "application/vnd.github+json" } });
+    if(!resp.ok) return null;
+    return await resp.json();
+  }
+
+  async function loadUpdates(){
+    const now = Date.now();
+    const windowMs = WINDOW_HOURS * 60 * 60 * 1000;
+    const cutoff = now - windowMs;
+
+    // file -> latestDateISO
+    const latestByFile = new Map();
+
+    // 1) 分页抓 commits（只要超出时间窗口就可以停）
+    let commits = [];
+    for(let page=1; page<=MAX_COMMIT_PAGES; page++){
+      const pageCommits = await fetchCommitsPage(page);
+      if(!Array.isArray(pageCommits) || pageCommits.length === 0) break;
+
+      commits.push(...pageCommits);
+
+      // 如果这一页里最老的 commit 都已经早于 cutoff，就可以停止继续翻页
+      const oldest = pageCommits[pageCommits.length - 1];
+      const oldestTime = new Date(oldest.commit?.author?.date || oldest.commit?.committer?.date || 0).getTime();
+      if(oldestTime < cutoff) break;
     }
 
-    function escapeHtml(s){
-      return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    }
+    // 2) 逐条看 commit 详情，聚合到文件（只保留 modified/added 的文件；删除不列入“最近更新文档”）
+    for(const c of commits){
+      const whenIso = c.commit?.author?.date || c.commit?.committer?.date;
+      const whenMs = new Date(whenIso || 0).getTime();
+      if(!whenIso || whenMs < cutoff) continue;
 
-    function fileLink(path){
-      // 把 "PDF/xxx.pdf" 变成站点路径 "/PDF/xxx.pdf"，并对中文做 URL 编码
-      const parts = path.split("/");
-      const fileName = parts.slice(1).join("/");
-      return `/${FOLDER_PATH}/${encodeURIComponent(fileName)}`;
-    }
+      const detail = await fetchCommitDetail(c.sha);
+      if(!detail) continue;
 
-    async function loadUpdates(){
-      const commitsUrl = `https://api.github.com/repos/${OWNER}/${REPO}/commits?path=${encodeURIComponent(FOLDER_PATH)}&per_page=${SHOW_N}`;
-      const commitsResp = await fetch(commitsUrl, {headers: {"Accept":"application/vnd.github+json"}});
-      if(!commitsResp.ok) throw new Error("无法读取 commits");
-      const commits = await commitsResp.json();
+      const files = (detail.files || [])
+        .map(f => ({ filename: f.filename, status: f.status }))
+        .filter(f => f.filename && f.filename.startsWith(FOLDER_PATH + "/"))
+        .filter(f => f.status === "added" || f.status === "modified");
 
-      const detailList = await Promise.all(commits.map(async (c) => {
-        const sha = c.sha;
-        const detailUrl = `https://api.github.com/repos/${OWNER}/${REPO}/commits/${sha}`;
-        const detailResp = await fetch(detailUrl, {headers: {"Accept":"application/vnd.github+json"}});
-        if(!detailResp.ok) return null;
-        const detail = await detailResp.json();
-
-        const when = detail.commit?.author?.date || c.commit?.author?.date;
-        const files = (detail.files || [])
-          .map(f => ({name: f.filename, status: f.status}))
-          .filter(f => f.name.startsWith(FOLDER_PATH + "/"));
-
-        return {
-          when,
-          html_url: detail.html_url,
-          message: (detail.commit?.message || "").split("\n")[0],
-          files
-        };
-      }));
-
-      const items = detailList.filter(Boolean);
-
-      if(items.length === 0){
-        listEl.innerHTML = '<span class="muted">暂无更新记录</span>';
-        return;
-      }
-
-      const html = [
-        "<ul>",
-        ...items.map(it => {
-          const date = fmtDate(it.when);
-          const msg = escapeHtml(it.message || "Update");
-          const filesHtml = (it.files && it.files.length)
-            ? (" · " + it.files.slice(0,3).map(f => {
-                const nice = escapeHtml(f.name.split("/").slice(1).join("/"));
-                const status = f.status; // added/modified/removed
-                if(status === "removed"){
-                  return `<span class="muted">删除 ${nice}</span>`;
-                }
-                return `<a href="${fileLink(f.name)}">${nice}</a>`;
-              }).join("、") + (it.files.length > 3 ? "…" : ""))
-            : "";
-
-          return `<li><span class="muted">${date}</span> · <a href="${it.html_url}" target="_blank" rel="noopener">#</a> ${msg}${filesHtml}</li>`;
-        }),
-        "</ul>"
-      ].join("");
-
-      listEl.innerHTML = html;
-    }
-
-    let loaded = false;
-
-    btn.addEventListener("click", async () => {
-      const willShow = panel.hidden;
-      panel.hidden = !willShow;
-
-      if(willShow && !loaded){
-        try{
-          await loadUpdates();
-          loaded = true;
-        }catch(e){
-          listEl.innerHTML = '<span class="muted">加载失败（可能是 GitHub API 限流），稍后再试。</span>';
+      for(const f of files){
+        const prev = latestByFile.get(f.filename);
+        if(!prev || new Date(prev).getTime() < whenMs){
+          latestByFile.set(f.filename, whenIso);
         }
       }
-    });
+    }
 
-    // 点击面板外关闭
-    document.addEventListener("click", (e) => {
-      if(panel.hidden) return;
-      if(panel.contains(e.target) || btn.contains(e.target)) return;
-      panel.hidden = true;
-    });
-  </script>
+    // 3) 渲染
+    if(latestByFile.size === 0){
+      listEl.innerHTML = '<span class="muted">最近一周没有更新~</span>';
+      return;
+    }
+
+    const rows = Array.from(latestByFile.entries())
+      .map(([filename, whenIso]) => ({
+        filename,
+        whenIso,
+        whenMs: new Date(whenIso).getTime()
+      }))
+      .sort((a,b) => b.whenMs - a.whenMs);
+
+    const html = [
+      "<ul>",
+      ...rows.map(r => {
+        const date = fmtDateCN(r.whenIso);
+        const name = escapeHtml(shortName(r.filename));
+        const href = fileLink(r.filename);
+        return `<li><span class="muted">${date}</span> <a href="${href}">${name}</a></li>`;
+      }),
+      "</ul>"
+    ].join("");
+
+    listEl.innerHTML = html;
+  }
+
+  let loaded = false;
+
+  btn.addEventListener("click", async () => {
+    const willShow = panel.hidden;
+    panel.hidden = !willShow;
+
+    if(willShow && !loaded){
+      try{
+        await loadUpdates();
+        loaded = true;
+      }catch(e){
+        listEl.innerHTML = '<span class="muted">加载失败（可能是 GitHub API 限流），稍后再试。</span>';
+      }
+    }
+  });
+
+  // 点击面板外关闭
+  document.addEventListener("click", (e) => {
+    if(panel.hidden) return;
+    if(panel.contains(e.target) || btn.contains(e.target)) return;
+    panel.hidden = true;
+  });
+</script>
 </body>
 </html>
